@@ -48,6 +48,7 @@ func (ic *IGConnector) Init(bridge *bridgev2.Bridge) {
 
 func (ic *IGConnector) Start(ctx context.Context) error {
 	ic.ResetHTTPTransport()
+	ic.registerLinkMedia()
 	err := ic.DB.Upgrade(ctx)
 	if err != nil {
 		return bridgev2.DBUpgradeError{Err: err, Section: "meta"}

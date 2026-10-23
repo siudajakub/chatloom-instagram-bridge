@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/google/go-querystring/query"
 	"go.mau.fi/util/jsonbytes"
@@ -129,7 +130,21 @@ func (c *Client) FetchReel(ctx context.Context, reelIDs []string, mediaID string
 	}
 
 	reqURL := c.GetEndpoint("reels_media") + query.Encode()
-	resp, respBody, err := c.http.MakeRequest(ctx, reqURL, http.MethodGet, h, nil, types.NONE)
+	method := http.MethodGet
+	var body []byte
+	bodyType := types.NONE
+	if len(reelIDs) > 0 && strings.HasPrefix(reelIDs[0], "highlight:") {
+		reqURL = strings.Replace(c.GetEndpoint("reels_media"), "https://www.instagram.com/", "https://i.instagram.com/", 1)
+		ids, err := json.Marshal(reelIDs)
+		if err != nil {
+			return nil, err
+		}
+		form := url.Values{"user_ids": {string(ids)}, "source": {"profile"}, "exclude_media_ids": {"[]"}}
+		body = []byte(form.Encode())
+		reqURL += form.Encode()
+		body = nil
+	}
+	resp, respBody, err := c.http.MakeRequest(ctx, reqURL, method, h, body, bodyType)
 	if err != nil {
 		c.checkResponseError(err)
 		return nil, fmt.Errorf("failed to fetch reels by ids %v: %w", reelIDs, err)
