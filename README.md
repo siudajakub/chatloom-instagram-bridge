@@ -1,3 +1,21 @@
+# ChatLoom Instagram bridge
+
+This is [mautrix-meta](https://github.com/mautrix/meta) (the `mautrix-instagram`
+binary) with one addition used by [ChatLoom](https://github.com/siudajakub/chatloom):
+an authenticated provisioning endpoint, `POST /v3/chatloom/link_media`, that
+resolves Instagram post, reel and story links through your own Instagram login,
+so ChatLoom can play shared Instagram media natively. Requests are bounded
+(strict URL parsing, two at a time, 64 MiB per file) and nothing is cached by
+the bridge.
+
+The default branch `chatloom/link-media` is the build ChatLoom runs. Build it
+with `./build-ig.sh` and run it with Beeper's `bbctl` like the official bridge; see
+[Self-hosting ChatLoom](https://github.com/siudajakub/chatloom/blob/main/docs/SELF-HOSTING.md).
+Messenger is unchanged, so use the official `mautrix-meta` for it.
+The upstream README follows.
+
+---
+
 # mautrix-meta
 A Matrix-Facebook Messenger and Instagram DM puppeting bridge.
 
