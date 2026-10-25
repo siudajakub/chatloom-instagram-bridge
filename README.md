@@ -8,7 +8,10 @@ so ChatLoom can play shared Instagram media natively. Requests are bounded
 (strict URL parsing, two at a time, 64 MiB per file) and nothing is cached by
 the bridge.
 
-The default branch `chatloom/link-media` is the build ChatLoom runs. Build it
+The default branch `chatloom/link-media` is the original build, on upstream
+`782b06b` (2026-09-19). `chatloom/update-2026-10-25` carries the same endpoint
+merged with upstream `main` at `5b6a5b3` (2026-10-25), which includes upstream's
+switch of story fetching to POST. Build either
 with `./build-ig.sh` and run it with Beeper's `bbctl` like the official bridge; see
 [Self-hosting ChatLoom](https://github.com/siudajakub/chatloom/blob/main/docs/SELF-HOSTING.md).
 Messenger is unchanged, so use the official `mautrix-meta` for it.
