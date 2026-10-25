@@ -257,7 +257,7 @@ func (c *Client) handleInstagramCAAWebLoginResponse(ctx context.Context, body []
 		if twoFactor.Type != gjson.String || json.Unmarshal([]byte(twoFactor.String()), &result) != nil || !result.TwoFactorRequired {
 			return nil, ErrInstagramWebCheckpointUnsupported
 		}
-		return c.captureInstagramWebTwoFactor(result, identifier, csrf, http.StatusOK)
+		return c.captureInstagramWebTwoFactor(ctx, result, identifier, csrf, http.StatusOK)
 	}
 	if data.Get("is_ig_login_recaptcha").Bool() {
 		if challenge := instagramWebChallengeFromRedirect(data); challenge != nil {
@@ -308,7 +308,7 @@ func (c *Client) handleInstagramCAAWebLoginResponse(ctx context.Context, body []
 	// dispatch. recaptcha_needed can accompany an ordinary AuthPlatform redirect;
 	// only is_ig_login_recaptcha selects its interactive CAPTCHA dialog.
 	if data.Get("reg_nta_context").Type != gjson.Null {
-		return nil, ErrInstagramWebCheckpointUnsupported
+		return nil, ErrInstagramWebRegistrationOffered
 	} else if data.Get("recaptcha_needed").Bool() {
 		if challenge := instagramWebChallengeFromRedirect(data); challenge != nil {
 			return challenge, nil

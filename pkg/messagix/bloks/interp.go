@@ -25,6 +25,7 @@ type InterpBridge struct {
 	FamilyDeviceID         string
 	AndroidDeviceID        string
 	MachineID              string
+	GetMachineID           func() string
 	EncryptPassword        func(context.Context, string) (string, error)
 	GetEncryptedMSISDN     func(context.Context, string, bool) (string, error)
 	SignRequestData        func(context.Context, any) (any, error)
@@ -625,6 +626,28 @@ func (i *Interpreter) Evaluate(ctx context.Context, form *BloksScriptNode) (*Blo
 			return i.Evaluate(ctx, &call.Args[1])
 		}
 		return i.Evaluate(ctx, &call.Args[2])
+	case "bk.action.core.While":
+		// Both bodies run in the caller's arg frame: the loop state lives in SetArg slots.
+		cond, err := unwrapLazyBloksBody(&call.Args[0], "core.while cond")
+		if err != nil {
+			return nil, err
+		}
+		body, err := unwrapLazyBloksBody(&call.Args[1], "core.while body")
+		if err != nil {
+			return nil, err
+		}
+		for {
+			keepGoing, err := i.Evaluate(ctx, cond)
+			if err != nil {
+				return nil, err
+			}
+			if !keepGoing.IsTruthy() {
+				return BloksNothing, nil
+			}
+			if _, err = i.Evaluate(ctx, body); err != nil {
+				return nil, err
+			}
+		}
 	case "bk.action.bool.Or", "bk.action.core.Coalesce":
 		first, err := i.Evaluate(ctx, &call.Args[0])
 		if err != nil {
@@ -753,6 +776,9 @@ func (i *Interpreter) Evaluate(ctx context.Context, form *BloksScriptNode) (*Blo
 		if err != nil {
 			return nil, err
 		}
+		if ambientArgs[idx] == nil {
+			return BloksNull, nil
+		}
 		return ambientArgs[idx], nil
 	case "bk.action.core.SetArg":
 		idx, err := evalAs[int64](ctx, i, &call.Args[0], "setarg")
@@ -777,21 +803,21 @@ func (i *Interpreter) Evaluate(ctx context.Context, form *BloksScriptNode) (*Blo
 		}
 		return BloksLiteralOf(first.Value() == second.Value()), nil
 	case "bk.action.f32.Lt", "bk.action.i64.Lt":
-		first, err := evalAs[int64](ctx, i, &call.Args[0], "lt lhs")
+		first, err := evalFloat(ctx, i, &call.Args[0], "lt lhs")
 		if err != nil {
 			return nil, err
 		}
-		second, err := evalAs[int64](ctx, i, &call.Args[1], "lt rhs")
+		second, err := evalFloat(ctx, i, &call.Args[1], "lt rhs")
 		if err != nil {
 			return nil, err
 		}
 		return BloksLiteralOf(first < second), nil
 	case "bk.action.f32.Gt", "bk.action.i64.Gt":
-		first, err := evalAs[int64](ctx, i, &call.Args[0], "gt lhs")
+		first, err := evalFloat(ctx, i, &call.Args[0], "gt lhs")
 		if err != nil {
 			return nil, err
 		}
-		second, err := evalAs[int64](ctx, i, &call.Args[1], "gt rhs")
+		second, err := evalFloat(ctx, i, &call.Args[1], "gt rhs")
 		if err != nil {
 			return nil, err
 		}
@@ -799,11 +825,24 @@ func (i *Interpreter) Evaluate(ctx context.Context, form *BloksScriptNode) (*Blo
 	case "bk.action.f32.Const":
 		return i.Evaluate(ctx, &call.Args[0])
 	case "bk.action.f32.Add":
-		first, err := evalFloat(ctx, i, &call.Args[0], "add lhs")
+		lhs, err := i.Evaluate(ctx, &call.Args[0])
 		if err != nil {
 			return nil, err
 		}
-		second, err := evalFloat(ctx, i, &call.Args[1], "add rhs")
+		rhs, err := i.Evaluate(ctx, &call.Args[1])
+		if err != nil {
+			return nil, err
+		}
+		lhsInt, lhsIsInt := lhs.Value().(int64)
+		rhsInt, rhsIsInt := rhs.Value().(int64)
+		if lhsIsInt && rhsIsInt {
+			return BloksLiteralOf(lhsInt + rhsInt), nil
+		}
+		first, err := castFloat(lhs, "add lhs")
+		if err != nil {
+			return nil, err
+		}
+		second, err := castFloat(rhs, "add rhs")
 		if err != nil {
 			return nil, err
 		}
@@ -920,6 +959,9 @@ func (i *Interpreter) Evaluate(ctx context.Context, form *BloksScriptNode) (*Blo
 	case "bk.fx.action.GetFamilyDeviceId":
 		return BloksLiteralOf(i.Bridge.FamilyDeviceID), nil
 	case "bk.action.caa.FetchMachineID":
+		if i.Bridge.GetMachineID != nil {
+			return BloksLiteralOf(i.Bridge.GetMachineID()), nil
+		}
 		return BloksLiteralOf(i.Bridge.MachineID), nil
 	case "bk.action.string.EncryptPassword":
 		pass, err := evalAs[string](ctx, i, &call.Args[0], "encryptpassword")
@@ -1565,22 +1607,32 @@ func (i *Interpreter) Evaluate(ctx context.Context, form *BloksScriptNode) (*Blo
 			return nil, err
 		}
 		return BloksLiteralOf(int64(len(str))), nil
-	case "bk.action.mins.Ge":
-		lhs, err := evalAs[int64](ctx, i, &call.Args[0], "mins.ge")
+	case "bk.action.string.StartsWith":
+		str, err := evalAs[string](ctx, i, &call.Args[0], "string.startswith")
 		if err != nil {
 			return nil, err
 		}
-		rhs, err := evalAs[int64](ctx, i, &call.Args[1], "mins.ge")
+		prefix, err := evalAs[string](ctx, i, &call.Args[1], "string.startswith")
+		if err != nil {
+			return nil, err
+		}
+		return BloksLiteralOf(strings.HasPrefix(str, prefix)), nil
+	case "bk.action.mins.Ge":
+		lhs, err := evalFloat(ctx, i, &call.Args[0], "mins.ge")
+		if err != nil {
+			return nil, err
+		}
+		rhs, err := evalFloat(ctx, i, &call.Args[1], "mins.ge")
 		if err != nil {
 			return nil, err
 		}
 		return BloksLiteralOf(lhs >= rhs), nil
 	case "bk.action.mins.Le":
-		lhs, err := evalAs[int64](ctx, i, &call.Args[0], "mins.ge")
+		lhs, err := evalFloat(ctx, i, &call.Args[0], "mins.le")
 		if err != nil {
 			return nil, err
 		}
-		rhs, err := evalAs[int64](ctx, i, &call.Args[1], "mins.ge")
+		rhs, err := evalFloat(ctx, i, &call.Args[1], "mins.le")
 		if err != nil {
 			return nil, err
 		}
@@ -1695,6 +1747,15 @@ func (i *Interpreter) Evaluate(ctx context.Context, form *BloksScriptNode) (*Blo
 		// V2 has a second argument which is always null in the flows we see,
 		// presumably some kind of navigation options.
 		url, err := evalAs[string](ctx, i, &call.Args[0], "openurl")
+		if err != nil {
+			return nil, err
+		}
+		return BloksNothing, i.Bridge.OpenURL(url)
+	case "bk.action.caa.PlayVoiceCaptchaAudio":
+		if len(call.Args) != 2 {
+			return nil, fmt.Errorf("PlayVoiceCaptchaAudio expects 2 arguments, got %d", len(call.Args))
+		}
+		url, err := evalAs[string](ctx, i, &call.Args[1], "captcha audio URL")
 		if err != nil {
 			return nil, err
 		}

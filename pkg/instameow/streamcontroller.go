@@ -19,11 +19,12 @@ package instameow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"time"
 
-	"github.com/coder/websocket"
 	"github.com/rs/zerolog"
 
 	"go.mau.fi/mautrix-meta/pkg/instameow/slidetypes"
@@ -50,7 +51,7 @@ func (c *Client) connectStreamController(ctx context.Context) {
 		} else if ctx.Err() != nil {
 			sock.Log.Debug().Err(err).Msg("Context canceled, stopping socket reconnect attempts")
 			return
-		} else if websocket.CloseStatus(err) == dgw.CloseStatusUnauthorized {
+		} else if dgw.IsUnauthorized(err) {
 			sock.Log.Err(err).Msg("Unauthorized error, not reconnecting")
 			return
 		}
@@ -93,7 +94,7 @@ type typingSubscribePayload struct {
 }
 
 func (c *Client) getStreamControllerSocketOptions() dgw.SocketOptions {
-	return dgw.SocketOptions{
+	options := dgw.SocketOptions{
 		GetCookies:     c.cookies.String,
 		Origin:         c.GetEndpoint("base_url"),
 		WSURL:          c.GetEndpoint("dgw_streamcontroller"),
@@ -103,7 +104,7 @@ func (c *Client) getStreamControllerSocketOptions() dgw.SocketOptions {
 		AppID:          c.configs.BrowserConfigTable.DGWWebConfig.AppID,
 		UserID:         c.configs.BrowserConfigTable.PolarisViewer.ID,
 		DeviceID:       c.configs.BrowserConfigTable.IGDMqttWebDeviceID.ClientID,
-		OnConnect: func(ctx context.Context, _ func(error)) error {
+		OnConnect: func(ctx context.Context, fatalError func(error)) error {
 			// Note: the official web app subscribes to multiple streams like presence and other realtime events,
 			// but we only support typing for now
 			params, err := json.Marshal(&typingSubscribeParameters{
@@ -120,6 +121,9 @@ func (c *Client) getStreamControllerSocketOptions() dgw.SocketOptions {
 			stream, err := c.streamControllerSocket.Load().EstablishStream(ctx, dgw.StreamInit{
 				Parameters:   params,
 				FrameHandler: c.handleStreamControllerFrame,
+				OnClose: func() {
+					fatalError(errors.New("typing stream closed"))
+				},
 			})
 			if err != nil {
 				c.log.Err(err).Msg("Failed to establish typing stream")
@@ -144,6 +148,17 @@ func (c *Client) getStreamControllerSocketOptions() dgw.SocketOptions {
 			return stream.SendData(ctx, postEstablishPayload)
 		},
 	}
+	if c.mobileSession.Load() != nil {
+		options.HTTPStream = &dgw.HTTPStreamOptions{
+			GetClient: c.http.GetHTTPClient, URL: c.GetEndpoint("dgw_streamcontroller_native"), GetHeaders: c.streamControllerNativeHeaders,
+		}
+	}
+	return options
+}
+
+func (c *Client) streamControllerNativeHeaders() http.Header {
+	session := c.mobileSession.Load()
+	return nativeStreamHeaders(session, session.Authorization, session.UserID, "all_sc")
 }
 
 var typingPathRegex = regexp.MustCompile(`^/direct_v2/threads/(\d+)/activity_indicator_id/.+$`)

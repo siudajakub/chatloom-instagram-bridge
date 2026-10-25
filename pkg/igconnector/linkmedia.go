@@ -108,24 +108,28 @@ func (ic *IGClient) linkMediaItems(ctx context.Context, t linkMediaTarget) ([]*r
 		}
 		return items, nil
 	}
+	// Story links carry no reel (user) ID, so the reel lookup may be refused;
+	// the media lookup below is still tried in that case.
 	res, err := ic.Client.FetchReel(ctx, nil, t.ID)
-	if err != nil {
-		return nil, err
-	}
-	reels := res.ReelsMedia
-	for _, reel := range res.Reels {
-		reels = append(reels, reel)
-	}
-	for _, reel := range reels {
-		for _, item := range reel.Items {
-			if item.Pk == t.ID {
-				return []*responses.Items{&item.Items}, nil
+	if err == nil {
+		reels := res.ReelsMedia
+		for _, reel := range res.Reels {
+			reels = append(reels, reel)
+		}
+		for _, reel := range reels {
+			for _, item := range reel.Items {
+				if item.Pk.String() == t.ID {
+					return []*responses.Items{&item.Items}, nil
+				}
 			}
 		}
 	}
 	fallback, fallbackErr := ic.Client.FetchMedia(ctx, t.ID, "")
 	if fallbackErr == nil && len(fallback.Items) > 0 {
 		return fallback.Items, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	return nil, fmt.Errorf("story unavailable")
 }

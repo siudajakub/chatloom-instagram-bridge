@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/google/go-querystring/query"
 	"go.mau.fi/util/jsonbytes"
@@ -121,30 +120,20 @@ func (c *Client) FetchReel(ctx context.Context, reelIDs []string, mediaID string
 	h.Set("sec-fetch-mode", "cors")
 	h.Set("sec-fetch-site", "same-origin")
 	h.Set("X-Web-Session-ID", c.configs.WebSessionID)
-	query := url.Values{}
+	h.Set("x-instagram-ajax", c.configs.BrowserConfigTable.InstagramWebPushInfo.RolloutHash)
+	reelIDsJSON, err := json.Marshal(reelIDs)
+	if err != nil {
+		return nil, err
+	}
+	form := url.Values{}
 	if mediaID != "" {
-		query.Add("media_id", mediaID)
+		form.Set("media_id", mediaID)
 	}
-	for _, id := range reelIDs {
-		query.Add("reel_ids", id)
-	}
+	form.Set("reel_ids", string(reelIDsJSON))
+	form.Set("fb_dtsg", c.configs.BrowserConfigTable.DTSGInitData.Token)
+	form.Set("jazoest", c.configs.Jazoest)
 
-	reqURL := c.GetEndpoint("reels_media") + query.Encode()
-	method := http.MethodGet
-	var body []byte
-	bodyType := types.NONE
-	if len(reelIDs) > 0 && strings.HasPrefix(reelIDs[0], "highlight:") {
-		reqURL = strings.Replace(c.GetEndpoint("reels_media"), "https://www.instagram.com/", "https://i.instagram.com/", 1)
-		ids, err := json.Marshal(reelIDs)
-		if err != nil {
-			return nil, err
-		}
-		form := url.Values{"user_ids": {string(ids)}, "source": {"profile"}, "exclude_media_ids": {"[]"}}
-		body = []byte(form.Encode())
-		reqURL += form.Encode()
-		body = nil
-	}
-	resp, respBody, err := c.http.MakeRequest(ctx, reqURL, method, h, body, bodyType)
+	resp, respBody, err := c.http.MakeRequest(ctx, c.GetEndpoint("reels_media"), http.MethodPost, h, []byte(form.Encode()), types.FORM)
 	if err != nil {
 		c.checkResponseError(err)
 		return nil, fmt.Errorf("failed to fetch reels by ids %v: %w", reelIDs, err)

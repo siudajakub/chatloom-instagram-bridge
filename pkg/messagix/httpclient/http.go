@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -34,9 +35,12 @@ type HTTPClient struct {
 
 	HTTP            *http.Client
 	HTTPSettings    exhttp.ClientSettings
+	ownedTransport  *req.Transport
+	uploadHTTP      *http.Client
 	websocketClient *http.Client
 	proxyAddr       string
 	GetNewProxy     func(reason string) (string, error)
+	instagramNative atomic.Bool
 
 	LogRedactedLoginResponses bool
 }
@@ -68,6 +72,25 @@ func (c *HTTPClient) SetConfigs(configs *Configs) {
 	c.configs = configs
 }
 
+func (c *HTTPClient) SetInstagramNativeMode(native bool) {
+	if c.instagramNative.Swap(native) != native {
+		c.SetConfig(c.HTTPSettings)
+	}
+}
+
+func (c *HTTPClient) SetTransportOverride(transport http.RoundTripper) {
+	c.HTTP.Timeout = 0
+	if transport == nil {
+		transport = c.ownedTransport
+		c.HTTP.Timeout = c.HTTPSettings.GlobalTimeout
+	}
+	c.HTTP.Transport = transport
+}
+
+func (c *HTTPClient) GetHTTPClient() *http.Client {
+	return c.HTTP
+}
+
 func (c *HTTPClient) SetConfig(settings exhttp.ClientSettings) {
 	if c == nil {
 		return
@@ -78,24 +101,34 @@ func (c *HTTPClient) SetConfig(settings exhttp.ClientSettings) {
 	if c.proxyAddr != "" {
 		c.HTTPSettings, _ = c.HTTPSettings.WithProxy(c.proxyAddr)
 	}
-	reqClient := req.C().ImpersonateChrome()
+	reqClient := c.newReqClient()
+	uploadReqClient := c.newReqClient()
 	wsClient := req.C().ImpersonateChrome()
 	forceHTTP1ChromeFingerprint(wsClient)
 	if DisableTLSVerification {
-		reqClient.SetTLSClientConfig(&tls.Config{
-			InsecureSkipVerify: true,
-		})
 		wsClient.SetTLSClientConfig(&tls.Config{
 			InsecureSkipVerify: true,
 		})
 	}
 
 	oldHTTP := c.HTTP
+	oldTransport := c.ownedTransport
+	oldUploadHTTP := c.uploadHTTP
 	c.websocketClient = req.WithTransportOverride(c.HTTPSettings.WithGlobalTimeout(WebsocketHandshakeTimeout), wsClient).Compile()
 	c.HTTP = req.WithTransportOverride(c.HTTPSettings, reqClient).Compile()
+	c.ownedTransport = reqClient.GetTransport()
+	uploadSettings := c.HTTPSettings.WithGlobalTimeout(MediaUploadTimeout).WithResponseHeaderTimeout(MediaUploadTimeout)
+	c.uploadHTTP = req.WithTransportOverride(uploadSettings, uploadReqClient).Compile()
+	c.uploadHTTP.CheckRedirect = c.checkHTTPRedirect
 	c.HTTP.CheckRedirect = c.checkHTTPRedirect
-	if oldHTTP != nil {
-		oldHTTP.CloseIdleConnections()
+	if oldHTTP != nil && oldHTTP.Transport != oldTransport {
+		c.SetTransportOverride(oldHTTP.Transport)
+	}
+	if oldTransport != nil {
+		oldTransport.CloseIdleConnections()
+	}
+	if oldUploadHTTP != nil {
+		oldUploadHTTP.CloseIdleConnections()
 	}
 
 	if DisableTLSVerification {
@@ -160,6 +193,29 @@ func forceHTTP1ChromeFingerprint(c *req.Client) {
 	})
 }
 
+func (c *HTTPClient) newReqClient() *req.Client {
+	reqClient := req.C()
+	if DisableTLSVerification {
+		reqClient.SetTLSClientConfig(&tls.Config{
+			InsecureSkipVerify: true,
+		})
+	}
+	if c.parent.GetPlatform().IsInstagram() && c.instagramNative.Load() {
+		reqClient.ImpersonateInstagramAndroid().
+			SetHTTP2ReadIdleTimeout(15 * time.Second)
+	} else {
+		reqClient.ImpersonateChrome()
+	}
+	return reqClient
+}
+
+func (c *HTTPClient) uploadClient() *http.Client {
+	if c.HTTP.Transport != c.ownedTransport {
+		return c.HTTP
+	}
+	return c.uploadHTTP
+}
+
 func (c *HTTPClient) SetProxy(proxyAddr string) error {
 	if c == nil {
 		return nil
@@ -195,6 +251,7 @@ func (c *HTTPClient) UpdateProxy(reason string) bool {
 
 var DisableTLSVerification = false
 var WebsocketHandshakeTimeout = 20 * time.Second
+var MediaUploadTimeout = 5 * time.Minute
 
 func (c *HTTPClient) GetWebsocketDialer() *websocket.DialOptions {
 	if c == nil {
@@ -343,7 +400,11 @@ func GetErrorRedirectURL(err error) string {
 
 func accountVerificationPath(path string) (challenge, checkpoint bool) {
 	path = "/" + strings.Trim(path, "/") + "/"
-	return strings.Contains(path, "/challenge/") || strings.Contains(path, "/auth_platform/"), strings.Contains(path, "/checkpoint/")
+	challenge = strings.Contains(path, "/challenge/") ||
+		strings.Contains(path, "/auth_platform/") ||
+		path == "/accounts/scraping_warning/" ||
+		path == "/accounts/update_risky_contactpoint/"
+	return challenge, strings.Contains(path, "/checkpoint/")
 }
 
 func IsPermanentRequestError(err error) bool {
@@ -412,7 +473,7 @@ func (c *HTTPClient) MakeRequest(
 	payload []byte,
 	contentType types.ContentType,
 ) (*http.Response, []byte, error) {
-	return c.makeRequest(ctx, url, method, headers, payload, contentType, func(e *zerolog.Event) *zerolog.Event {
+	return c.makeRequest(ctx, c.GetHTTPClient, url, method, headers, payload, contentType, func(e *zerolog.Event) *zerolog.Event {
 		return e
 	})
 }
@@ -424,6 +485,7 @@ func isClientHTTP(resp *http.Response, err error) bool {
 
 func (c *HTTPClient) makeRequest(
 	ctx context.Context,
+	getClient func() *http.Client,
 	url string,
 	method string,
 	headers http.Header,
@@ -435,7 +497,7 @@ func (c *HTTPClient) makeRequest(
 	for {
 		attempts++
 		start := time.Now()
-		resp, respDat, err := c.MakeRequestOnce(ctx, url, method, headers, payload, contentType)
+		resp, respDat, err := c.makeRequestOnce(ctx, getClient(), url, method, headers, payload, contentType)
 		dur := time.Since(start)
 		if err == nil {
 			logContext(c.log.Debug()).
@@ -547,6 +609,13 @@ func (c *HTTPClient) fetchPageData(ctx context.Context, page string) ([]byte, er
 	response, responseBody, err := c.MakeRequest(ctx, page, "GET", headers, nil, types.NONE)
 	if response != nil {
 		c.parent.GetCookies().UpdateFromResponse(response)
+		if err != nil && c.LogRedactedLoginResponses {
+			evt := c.log.Debug().
+				Str("url", page).
+				Int("status_code", response.StatusCode).
+				Str("content_type", response.Header.Get("content-type"))
+			AddRedactedResponse(evt, responseBody).Msg("Page request failed")
+		}
 	}
 	return responseBody, err
 }

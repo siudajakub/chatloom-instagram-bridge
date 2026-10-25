@@ -30,6 +30,10 @@ var InstagramEndpoints = map[string]string{
 	"dgw_mqttbypass":       instaDGWBase + "/ws/mqttbypass",
 	"dgw_streamcontroller": instaDGWBase + "/ws/streamcontroller",
 
+	"dgw_lightspeed_native":       instaDGWBase + "/lightspeed",
+	"dgw_mqttbypass_native":       instaDGWBase + "/mqttbypass",
+	"dgw_streamcontroller_native": instaDGWBase + "/streamcontroller",
+
 	"e2ee_ws_url":   "wss://web-chat-e2ee.instagram.com/ws/chat",
 	"icdc_fetch":    "https://reg-e2ee.instagram.com/v2/fb_icdc_fetch",
 	"icdc_register": "https://reg-e2ee.instagram.com/v2/fb_register_v2",
@@ -43,7 +47,7 @@ var InstagramEndpoints = map[string]string{
 	"bulk_route_definition": instaBaseUrl + "/ajax/bulk-route-definitions/",
 
 	"web_profile_info": instaApiV1Url + "/users/web_profile_info/?",
-	"reels_media":      instaApiV1Url + "/feed/reels_media/?",
+	"reels_media":      instaApiV1Url + "/feed/reels_media/",
 	"media_info":       instaApiV1Url + "/media/%s/info/",
 	"web_push":         instaWebApiV1Url + "/push/register/",
 }
