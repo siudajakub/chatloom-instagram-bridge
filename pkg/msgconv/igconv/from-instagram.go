@@ -110,17 +110,9 @@ func (mc *MessageConverter) ToMatrix(
 			cm.Parts = append(cm.Parts, mc.wrapMedia(ctx, "animated media", i, mc.animatedMediaReuploadParams(att)))
 		}
 	case *slidetypes.MessageContentRavenImage:
-		if (content.Attachment == nil || mc.DisableViewOnce) && content.ViewMode.ViewType() != "" {
-			cm.Parts = append(cm.Parts, mc.makeViewOnceError("image", content.ViewMode.ViewType()))
-		} else {
-			cm.Parts = append(cm.Parts, mc.wrapMedia(ctx, "raven image", 0, mc.attachmentReuploadParams(content.Attachment, table.AttachmentTypeImage)))
-		}
+		cm.Parts = append(cm.Parts, mc.wrapRaven(ctx, "image", content.ViewMode, content.Attachment, table.AttachmentTypeImage))
 	case *slidetypes.MessageContentRavenVideo:
-		if (content.Attachment == nil || mc.DisableViewOnce) && content.ViewMode.ViewType() != "" {
-			cm.Parts = append(cm.Parts, mc.makeViewOnceError("video", content.ViewMode.ViewType()))
-		} else {
-			cm.Parts = append(cm.Parts, mc.wrapMedia(ctx, "raven video", 0, mc.attachmentReuploadParams(content.Attachment, table.AttachmentTypeVideo)))
-		}
+		cm.Parts = append(cm.Parts, mc.wrapRaven(ctx, "video", content.ViewMode, content.Attachment, table.AttachmentTypeVideo))
 	case *slidetypes.MessageContentSticker:
 		cm.Parts = append(cm.Parts, mc.wrapMedia(ctx, "sticker", 0, mc.stickerReuploadParams(content)))
 	case *slidetypes.MessageContentMusicSticker:
@@ -176,6 +168,50 @@ func (mc *MessageConverter) ToMatrix(
 
 func (mc *MessageConverter) MetaToMatrixText(ctx context.Context, text string, mentions slidetypes.MentionList) *event.MessageEventContent {
 	return textfmt.MetaToMatrixText(ctx, text, mentions.ToSocket(), mc.getBasicUserInfo)
+}
+
+// ChatLoomRavenKey marks bridged Instagram view-once ("raven") media for the
+// ChatLoom client: {"version": 1, "view_mode": 0|1}. The media itself is
+// bridged as an ordinary m.image/m.video, as before; the marker only lets the
+// client show a "Tap to view" card. It deliberately is not
+// com.beeper.view_limited, which would opt the event into bridgev2's
+// view-limited flows (redaction, viewed receipts) that ChatLoom does not use.
+// The bridge never tells Instagram that the media was opened.
+const ChatLoomRavenKey = "pl.personal.chat.instagram.raven"
+
+// ChatLoomRavenVersion is the version of the ChatLoomRavenKey payload.
+const ChatLoomRavenVersion = 1
+
+func (mc *MessageConverter) wrapRaven(
+	ctx context.Context,
+	mediaType string,
+	mode slidetypes.RavenViewMode,
+	att *slidetypes.Attachment,
+	typ table.AttachmentType,
+) *bridgev2.ConvertedMessagePart {
+	if (att == nil || mc.DisableViewOnce) && mode.ViewType() != "" {
+		return mc.makeViewOnceError(mediaType, mode.ViewType())
+	}
+	return markChatLoomRaven(mc.wrapMedia(ctx, "raven "+mediaType, 0, mc.attachmentReuploadParams(att, typ)), mode)
+}
+
+// markChatLoomRaven adds ChatLoomRavenKey to a bridged view-once photo or
+// video. Keep-in-chat media (view mode 2) and error notices stay unmarked.
+func markChatLoomRaven(part *bridgev2.ConvertedMessagePart, mode slidetypes.RavenViewMode) *bridgev2.ConvertedMessagePart {
+	if part == nil || part.Content == nil || mode.ViewType() == "" {
+		return part
+	}
+	if part.Content.MsgType != event.MsgImage && part.Content.MsgType != event.MsgVideo {
+		return part
+	}
+	if part.Extra == nil {
+		part.Extra = make(map[string]any)
+	}
+	part.Extra[ChatLoomRavenKey] = map[string]any{
+		"version":   ChatLoomRavenVersion,
+		"view_mode": int(mode),
+	}
+	return part
 }
 
 func (mc *MessageConverter) makeViewOnceError(mediaType, viewed string) *bridgev2.ConvertedMessagePart {
