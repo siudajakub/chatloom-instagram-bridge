@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -104,9 +105,14 @@ func (ic *IGConnector) Download(ctx context.Context, mediaID networkid.MediaID, 
 	}
 
 	log := zerolog.Ctx(ctx)
+	sharedVideo := info.IsXMA() && strings.HasPrefix(info.MimeType, "video/")
+	maxDownloadSize := ic.MsgConv.MaxFileSize
+	if sharedVideo {
+		maxDownloadSize = min(maxDownloadSize, mediadl.SharedVideoMaxSourceSize)
+	}
 
 	needsRefresh := !info.ExpiresAt.IsZero() && time.Now().After(info.ExpiresAt.Add(-5*time.Minute))
-	size, reader, err := mediadl.DownloadMedia(ctx, info.MimeType, info.URL, ic.MsgConv.MaxFileSize)
+	size, reader, err := mediadl.DownloadMedia(ctx, info.MimeType, info.URL, maxDownloadSize)
 	if err != nil && (errors.Is(err, mediadl.ErrForbidden) || needsRefresh) {
 		allowXMARefresh := params["com.beeper.interactive_download_request"] != "false"
 		if !allowXMARefresh && info.IsXMA() {
@@ -126,11 +132,20 @@ func (ic *IGConnector) Download(ctx context.Context, mediaID networkid.MediaID, 
 		}
 
 		log.Debug().Str("refreshed_url", refreshedURL).Msg("Successfully refreshed media URL")
-		size, reader, err = mediadl.DownloadMedia(ctx, info.MimeType, refreshedURL, ic.MsgConv.MaxFileSize)
+		size, reader, err = mediadl.DownloadMedia(ctx, info.MimeType, refreshedURL, maxDownloadSize)
 	}
 
 	if err != nil {
 		return nil, err
+	}
+	if sharedVideo {
+		sourceReader := reader
+		size, reader, err = mediadl.CompressSharedVideo(ctx, sourceReader, size, maxDownloadSize)
+		_ = sourceReader.Close()
+		if err != nil {
+			return nil, err
+		}
+		info.MimeType = "video/mp4"
 	}
 
 	return &mediaproxy.GetMediaResponseData{
@@ -456,13 +471,9 @@ func extractBestURL(item *responses.Items) (string, error) {
 	var bestURL string
 	var bestRes int
 
-	// Find the highest resolution video, if any
-	for _, ver := range item.VideoVersions {
-		res := ver.Width * ver.Height
-		if res > bestRes {
-			bestURL = ver.URL
-			bestRes = res
-		}
+	// Use the same bounded video source as new XMA items and permalink media.
+	if ver, ok := mediadl.SelectSharedVideo(item.VideoVersions); ok {
+		return ver.URL, nil
 	}
 
 	// Find the highest resolution image if no video

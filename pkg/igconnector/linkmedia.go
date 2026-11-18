@@ -147,9 +147,6 @@ func (ic *IGConnector) registerLinkMedia() {
 			http.Error(w, "busy", 429)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-		defer cancel()
-		r = r.WithContext(ctx)
 		// The existing provisioning middleware authenticates the Matrix user.
 		user := prov.GetUser(r)
 		if user == nil {
@@ -177,6 +174,15 @@ func (ic *IGConnector) registerLinkMedia() {
 			http.Error(w, "invalid request", 400)
 			return
 		}
+		timeout := 20 * time.Second
+		if req.Download {
+			// Includes the source fetch and bounded FFmpeg conversion; the client
+			// allows 75 seconds for the existing JSON download contract.
+			timeout = 70 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		r = r.WithContext(ctx)
 		target, err := parseLinkMedia(req.URL)
 		if err != nil {
 			http.Error(w, "unsupported permalink", 400)
@@ -220,11 +226,9 @@ func (ic *IGConnector) registerLinkMedia() {
 		urls := make([]string, len(items))
 		for i, item := range items {
 			a := asset{Type: "image"}
-			for _, v := range item.VideoVersions {
-				if v.URL != "" && (urls[i] == "" || v.Width*v.Height > a.Width*a.Height) {
-					a = asset{Type: "video", Width: v.Width, Height: v.Height}
-					urls[i] = v.URL
-				}
+			if v, ok := mediadl.SelectSharedVideo(item.VideoVersions); ok {
+				a = asset{Type: "video", Width: v.Width, Height: v.Height}
+				urls[i] = v.URL
 			}
 			if urls[i] == "" {
 				for _, img := range item.ImageVersions2.Candidates {
@@ -252,15 +256,40 @@ func (ic *IGConnector) registerLinkMedia() {
 		if assets[req.Index].Type == "image" {
 			mime = "image/jpeg"
 		}
-		size, reader, err := mediadl.DownloadMedia(r.Context(), mime, urls[req.Index], ic.MsgConv.MaxFileSize)
+		if mime == "video/mp4" && !mediadl.SharedVideoCompressionAvailable() {
+			w.Header().Set("X-Chatloom-Error", "compression_unavailable")
+			http.Error(w, "video compression unavailable", 503)
+			return
+		}
+		maxSourceSize := min(ic.MsgConv.MaxFileSize, mediadl.SharedVideoMaxSize)
+		if mime == "video/mp4" {
+			maxSourceSize = min(ic.MsgConv.MaxFileSize, mediadl.SharedVideoMaxSourceSize)
+		}
+		size, reader, err := mediadl.DownloadMedia(r.Context(), mime, urls[req.Index], maxSourceSize)
 		if err != nil {
 			http.Error(w, "download failed", 502)
 			return
 		}
 		defer reader.Close()
-		if size < 1 || size > 64*1024*1024 {
+		if size < 1 || size > maxSourceSize {
 			http.Error(w, "media too large", 413)
 			return
+		}
+		if mime == "video/mp4" {
+			size, reader, err = mediadl.CompressSharedVideo(r.Context(), reader, size, ic.MsgConv.MaxFileSize)
+			if err != nil {
+				w.Header().Set("X-Chatloom-Error", "compression_failed")
+				status := http.StatusBadGateway
+				if errors.Is(err, mediadl.ErrSharedVideoCompressionBusy) {
+					w.Header().Set("X-Chatloom-Error", "compression_busy")
+					status = http.StatusTooManyRequests
+				} else if errors.Is(err, mediadl.ErrTooLargeFile) {
+					status = http.StatusRequestEntityTooLarge
+				}
+				http.Error(w, "video compression failed", status)
+				return
+			}
+			defer reader.Close()
 		}
 		data, err := io.ReadAll(io.LimitReader(reader, size+1))
 		if err != nil || int64(len(data)) != size {

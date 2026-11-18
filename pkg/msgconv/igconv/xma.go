@@ -348,12 +348,10 @@ func (mc *MessageConverter) wrapXMAItem(
 	var width, height int
 	var bestURL string
 	attachmentType := table.AttachmentTypeVideo
-	for _, video := range targetItem.VideoVersions {
-		if video.Width*video.Height > width*height {
-			bestURL = video.URL
-			width = video.Width
-			height = video.Height
-		}
+	if video, ok := mediadl.SelectSharedVideo(targetItem.VideoVersions); ok {
+		bestURL = video.URL
+		width = video.Width
+		height = video.Height
 	}
 	if bestURL == "" {
 		attachmentType = table.AttachmentTypeImage
