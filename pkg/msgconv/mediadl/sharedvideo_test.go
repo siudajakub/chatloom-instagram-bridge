@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"go.mau.fi/mautrix-meta/pkg/messagix/responses"
 )
@@ -209,5 +210,34 @@ func TestSharedVideoFFmpeg(t *testing.T) {
 			}
 			t.Logf("synthetic %s: %d -> %d bytes (%.1f%% smaller)", tc.inputSize, inputStat.Size(), size, 100*(1-float64(size)/float64(inputStat.Size())))
 		})
+	}
+}
+
+func TestCompressSharedVideoWaitingRetriesWhileBusy(t *testing.T) {
+	fakeFFmpeg(t)
+	sharedVideoGate <- struct{}{}
+	go func() {
+		time.Sleep(600 * time.Millisecond)
+		<-sharedVideoGate
+	}()
+	_, reader, err := compressSharedVideoWaiting(context.Background(), strings.NewReader("source"), 6, 1024)
+	if errors.Is(err, ErrSharedVideoCompressionBusy) {
+		t.Fatalf("still busy after the converter was released")
+	}
+	if reader != nil {
+		_ = reader.Close()
+	}
+}
+
+func TestCompressSharedVideoWaitingGivesUp(t *testing.T) {
+	fakeFFmpeg(t)
+	old := sharedVideoBusyWait
+	sharedVideoBusyWait = 0
+	defer func() { sharedVideoBusyWait = old }()
+	sharedVideoGate <- struct{}{}
+	defer func() { <-sharedVideoGate }()
+	_, reader, err := compressSharedVideoWaiting(context.Background(), strings.NewReader("source"), 6, 1024)
+	if !errors.Is(err, ErrSharedVideoCompressionBusy) || reader != nil {
+		t.Fatalf("got reader %v, error %v", reader, err)
 	}
 }

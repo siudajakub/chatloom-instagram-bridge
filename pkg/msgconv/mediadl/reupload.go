@@ -247,15 +247,28 @@ func ReuploadFileToMatrix(ctx context.Context, params ReuploadParams) (*bridgev2
 	defer reader.Close()
 	if sharedVideo {
 		sourceReader := reader
-		size, reader, err = CompressSharedVideo(ctx, sourceReader, size, maxDownloadSize)
+		compressedSize, compressed, compressErr := compressSharedVideoWaiting(ctx, sourceReader, size, maxDownloadSize)
 		_ = sourceReader.Close()
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", bridgev2.ErrMediaConvertFailed, err)
+		if compressErr == nil {
+			size, reader = compressedSize, compressed
+			defer reader.Close()
+			params.MimeType = "video/mp4"
+			params.FileName = strings.TrimSuffix(params.FileName, path.Ext(params.FileName)) + ".mp4"
+			needMime = false
+		} else if ctx.Err() != nil {
+			return nil, fmt.Errorf("%w: %w", bridgev2.ErrMediaConvertFailed, compressErr)
+		} else {
+			// A shared reel that arrives in a chat must not be lost because the
+			// converter failed: bridge the original file as before compression.
+			size, reader, err = DownloadMedia(ctx, params.MimeType, params.URL, params.MaxFileSize)
+			if err != nil {
+				if errors.Is(err, ErrTooLargeFile) {
+					return nil, err
+				}
+				return nil, fmt.Errorf("%w: %w", bridgev2.ErrMediaDownloadFailed, err)
+			}
+			defer reader.Close()
 		}
-		defer reader.Close()
-		params.MimeType = "video/mp4"
-		params.FileName = strings.TrimSuffix(params.FileName, path.Ext(params.FileName)) + ".mp4"
-		needMime = false
 	}
 	content.Info.Size = int(size)
 	needVoiceConvert := params.AttachmentType == table.AttachmentTypeAudio && params.MimeType != "audio/ogg" && ffmpeg.Supported()
@@ -330,3 +343,23 @@ func ReuploadFileToMatrix(ctx context.Context, params ReuploadParams) (*bridgev2
 		DBMetadata: &metaid.MessageMetadata{},
 	}, nil
 }
+
+// compressSharedVideoWaiting retries while the single converter is busy, so
+// several reels arriving together are compressed one after another. Busy is
+// reported before the source is read, so the same reader can be retried.
+func compressSharedVideoWaiting(ctx context.Context, source io.Reader, size, maxSize int64) (int64, io.ReadCloser, error) {
+	deadline := time.Now().Add(sharedVideoBusyWait)
+	for {
+		n, reader, err := CompressSharedVideo(ctx, source, size, maxSize)
+		if !errors.Is(err, ErrSharedVideoCompressionBusy) || time.Now().After(deadline) {
+			return n, reader, err
+		}
+		select {
+		case <-ctx.Done():
+			return 0, nil, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+var sharedVideoBusyWait = 2 * time.Minute
