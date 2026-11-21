@@ -53,16 +53,27 @@ func (m *MetaClient) wrapUserInfo(info types.UserInfo) *bridgev2.UserInfo {
 			Username:    info.GetUsername(),
 			ID:          info.GetFBID(),
 		})),
-		Avatar: wrapAvatar(info.GetAvatarURL()),
+		Avatar: contactAvatar(info.GetAvatarURL()),
 		IsBot:  ptr.Ptr(info.GetFBID() == MetaAIInstagramID || info.GetFBID() == MetaAIMessengerID), // TODO do this in a less hardcoded way?
 	}
+}
+
+// Contact snapshots can omit the picture even when a profile has one.
+func contactAvatar(avatarURL string) *bridgev2.Avatar {
+	if avatarURL == "" {
+		return nil
+	}
+	return wrapAvatar(avatarURL)
 }
 
 func wrapAvatar(avatarURL string) *bridgev2.Avatar {
 	if avatarURL == "" {
 		return &bridgev2.Avatar{Remove: true}
 	}
-	parsedURL, _ := url.Parse(avatarURL)
+	parsedURL, err := url.Parse(avatarURL)
+	if err != nil || parsedURL.Hostname() == "" || parsedURL.Scheme != "https" {
+		return nil
+	}
 	avatarID := path.Base(parsedURL.Path)
 	return &bridgev2.Avatar{
 		ID: networkid.AvatarID(avatarID),

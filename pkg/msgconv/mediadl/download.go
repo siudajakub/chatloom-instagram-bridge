@@ -88,11 +88,20 @@ func addDownloadHeaders(hdr http.Header, mime string) {
 }
 
 func DownloadAvatar(ctx context.Context, url string) ([]byte, error) {
-	_, resp, err := downloadMedia(ctx, "image/*", url, 5*1024*1024, "", false)
+	const limit = 5 * 1024 * 1024
+	_, resp, err := downloadMedia(ctx, "image/*", url, limit, "", false)
 	if err != nil {
 		return nil, err
 	}
-	return io.ReadAll(resp)
+	defer resp.Close()
+	data, err := io.ReadAll(io.LimitReader(resp, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > limit {
+		return nil, ErrTooLargeFile
+	}
+	return data, nil
 }
 
 func DownloadMedia(ctx context.Context, mime, url string, maxSize int64) (int64, io.ReadCloser, error) {

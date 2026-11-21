@@ -85,7 +85,7 @@ func (ic *IGClient) wrapUserInfo(info *slidetypes.User) *bridgev2.UserInfo {
 			Username:    info.Username,
 			ID:          info.InteropMessagingUserFBID,
 		})),
-		Avatar:       wrapAvatar(info.ProfilePicURL),
+		Avatar:       contactAvatar(info.ProfilePicURL),
 		IsBot:        new(info.AIAgentType != ""),
 		ExtraUpdates: ic.updateGhostIGID(info.Username, info.ID, info.InteropMessagingUserFBID),
 	}
@@ -103,16 +103,28 @@ func (ic *IGClient) wrapSearchResultInfo(info *slidetypes.SearchResult) *bridgev
 			Username:    info.Username,
 			ID:          info.InteropMessagingUserFBID,
 		})),
-		Avatar:       wrapAvatar(info.ProfilePicURL),
+		Avatar:       contactAvatar(info.ProfilePicURL),
 		ExtraUpdates: ic.updateGhostIGID(info.Username, info.PK, info.InteropMessagingUserFBID),
 	}
+}
+
+// Profiles from chat info and search may omit the picture. Preserve the
+// ghost's current photo until a snapshot supplies a replacement.
+func contactAvatar(avatarURL string) *bridgev2.Avatar {
+	if avatarURL == "" {
+		return nil
+	}
+	return wrapAvatar(avatarURL)
 }
 
 func wrapAvatar(avatarURL string) *bridgev2.Avatar {
 	if avatarURL == "" {
 		return &bridgev2.Avatar{Remove: true}
 	}
-	parsedURL, _ := url.Parse(avatarURL)
+	parsedURL, err := url.Parse(avatarURL)
+	if err != nil || parsedURL.Hostname() == "" || parsedURL.Scheme != "https" {
+		return nil
+	}
 	avatarID := path.Base(parsedURL.Path)
 	return &bridgev2.Avatar{
 		ID: networkid.AvatarID(avatarID),
