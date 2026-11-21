@@ -235,7 +235,10 @@ func (mc *MessageConverter) wrapText(ctx context.Context, text string, mentions 
 func (mc *MessageConverter) mutateWrappedAdminText(part *bridgev2.ConvertedMessagePart, msg *slidetypes.Message) {
 	switch msg.ContentType {
 	case "IG_VIDEO_CALL_XMAT":
-		// TODO include call metadata if possible
+		part.Content.BeeperActionMessage = &event.BeeperActionMessage{
+			Type:     event.BeeperActionMessageCall,
+			CallType: event.BeeperActionMessageCallTypeVideo,
+		}
 	default:
 		part.DontBridge = true
 	}
