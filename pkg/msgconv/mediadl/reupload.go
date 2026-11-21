@@ -232,7 +232,12 @@ func ReuploadFileToMatrix(ctx context.Context, params ReuploadParams) (*bridgev2
 		}, nil
 	}
 
-	size, reader, err := DownloadMedia(ctx, params.MimeType, params.URL, params.MaxFileSize)
+	sharedVideo := params.RefreshMeta.IsXMA() && params.AttachmentType == table.AttachmentTypeVideo
+	maxDownloadSize := params.MaxFileSize
+	if sharedVideo {
+		maxDownloadSize = min(maxDownloadSize, SharedVideoMaxSourceSize)
+	}
+	size, reader, err := DownloadMedia(ctx, params.MimeType, params.URL, maxDownloadSize)
 	if err != nil {
 		if errors.Is(err, ErrTooLargeFile) {
 			return nil, err
@@ -240,6 +245,18 @@ func ReuploadFileToMatrix(ctx context.Context, params ReuploadParams) (*bridgev2
 		return nil, fmt.Errorf("%w: %w", bridgev2.ErrMediaDownloadFailed, err)
 	}
 	defer reader.Close()
+	if sharedVideo {
+		sourceReader := reader
+		size, reader, err = CompressSharedVideo(ctx, sourceReader, size, maxDownloadSize)
+		_ = sourceReader.Close()
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", bridgev2.ErrMediaConvertFailed, err)
+		}
+		defer reader.Close()
+		params.MimeType = "video/mp4"
+		params.FileName = strings.TrimSuffix(params.FileName, path.Ext(params.FileName)) + ".mp4"
+		needMime = false
+	}
 	content.Info.Size = int(size)
 	needVoiceConvert := params.AttachmentType == table.AttachmentTypeAudio && params.MimeType != "audio/ogg" && ffmpeg.Supported()
 	needImageSize := (params.Width == 0 || params.Height == 0) &&
