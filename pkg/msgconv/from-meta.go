@@ -511,6 +511,24 @@ func (mc *MessageConverter) xmaAttachmentToMatrix(ctx context.Context, att *tabl
 	if att.CTA != nil && att.CTA.Type_ == "xma_live_location_sharing" {
 		return []*bridgev2.ConvertedMessagePart{mc.xmaLocationToMatrix(ctx, att)}
 	}
+	if att.CTA != nil && strings.HasPrefix(att.CTA.Type_, "xma_rtc_") {
+		callType := event.BeeperActionMessageCallType("")
+		switch {
+		case strings.Contains(att.CTA.Type_, "video"):
+			callType = event.BeeperActionMessageCallTypeVideo
+		case strings.Contains(att.CTA.Type_, "audio"), strings.Contains(att.CTA.Type_, "voice"):
+			callType = event.BeeperActionMessageCallTypeVoice
+		}
+		status := "unknown"
+		if strings.Contains(att.CTA.Type_, "_missed_") {
+			status = "missed"
+		}
+		part := CallLogToMatrix(att.TitleText, callType, status, 0)
+		if portal, ok := ctx.Value(mediadl.ContextKeyPortal).(*bridgev2.Portal); ok {
+			part.DontBridge = portal.Disappear.Timer > 0
+		}
+		return []*bridgev2.ConvertedMessagePart{part}
+	}
 	url := att.PlayableUrl
 	mime := att.PlayableUrlMimeType
 	var width, height int64
