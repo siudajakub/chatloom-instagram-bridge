@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"go.mau.fi/mautrix-meta/pkg/messagix/types"
 	"go.mau.fi/mautrix-meta/pkg/metaid"
+	"go.mau.fi/mautrix-meta/pkg/msgconv"
 )
 
 func (m *MetaClient) e2eeEventHandler(rawEvt any) bool {
@@ -92,6 +94,8 @@ func (m *MetaClient) e2eeEventHandler(rawEvt any) bool {
 			},
 			Targets: targets,
 		}).Success
+	case *events.FBCallEvent:
+		return m.handleWAFBCall(evt)
 	case *events.OfflineSyncPreview:
 		m.connectBackgroundWAEventCount.Store(uint32(evt.Messages))
 	case *events.OfflineSyncCompleted:
@@ -222,6 +226,43 @@ func (m *MetaClient) e2eeEventHandler(rawEvt any) bool {
 		log.Debug().Type("event_type", rawEvt).Msg("Unhandled WhatsApp event")
 	}
 	return true
+}
+
+func (m *MetaClient) handleWAFBCall(evt *events.FBCallEvent) bool {
+	if evt.EventType != "missed" && evt.EventType != "ended" {
+		return true
+	}
+	callID := cmp.Or(evt.ParentID, evt.ID)
+	if evt.Chat.IsEmpty() || evt.Actor.IsEmpty() || callID == "" || evt.Timestamp.IsZero() {
+		return true
+	}
+	if !m.Main.Bridge.QueueRemoteEvent(m.UserLogin, &EnsureWAChatStateEvent{JID: evt.Chat, m: m}).Success {
+		return false
+	}
+	sender := m.makeWAEventSender(evt.Actor)
+	return m.Main.Bridge.QueueRemoteEvent(m.UserLogin, &simplevent.Message[*events.FBCallEvent]{
+		EventMeta: simplevent.EventMeta{
+			Type:        bridgev2.RemoteEventMessage,
+			PortalKey:   m.makeWAPortalKey(evt.Chat),
+			Sender:      sender,
+			Timestamp:   evt.Timestamp,
+			StreamOrder: evt.Timestamp.UnixMilli(),
+		},
+		ID:   metaid.MakeWAMessageID(evt.Chat, evt.Actor, "call-"+callID),
+		Data: evt,
+		ConvertMessageFunc: func(_ context.Context, portal *bridgev2.Portal, _ bridgev2.MatrixAPI, evt *events.FBCallEvent) (*bridgev2.ConvertedMessage, error) {
+			var callType event.BeeperActionMessageCallType
+			switch evt.CallType {
+			case "video":
+				callType = event.BeeperActionMessageCallTypeVideo
+			case "audio", "voice":
+				callType = event.BeeperActionMessageCallTypeVoice
+			}
+			part := msgconv.CallLogToMatrix("", callType, evt.EventType, evt.Duration)
+			part.DontBridge = portal.Disappear.Timer > 0
+			return &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{part}}, nil
+		},
+	}).Success
 }
 
 func (m *MetaClient) handleWAChatPresence(ctx context.Context, evt *events.ChatPresence) {

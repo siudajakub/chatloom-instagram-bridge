@@ -519,7 +519,11 @@ func (mc *MessageConverter) xmaAttachmentToMatrix(ctx context.Context, att *tabl
 		return []*bridgev2.ConvertedMessagePart{mc.xmaLocationToMatrix(ctx, att)}
 	}
 	if isXMACallLog(att) {
-		return []*bridgev2.ConvertedMessagePart{xmaCallLogToMatrix(att)}
+		part := xmaCallLogToMatrix(att)
+		if portal, ok := ctx.Value(mediadl.ContextKeyPortal).(*bridgev2.Portal); ok {
+			part.DontBridge = portal.Disappear.Timer > 0
+		}
+		return []*bridgev2.ConvertedMessagePart{part}
 	}
 	url := att.PlayableUrl
 	mime := att.PlayableUrlMimeType
@@ -722,17 +726,11 @@ func xmaCallLogToMatrix(att *table.WrappedXMA) *bridgev2.ConvertedMessagePart {
 			body = "Missed " + strings.ToLower(body)
 		}
 	}
-	return &bridgev2.ConvertedMessagePart{
-		Type: event.EventMessage,
-		Content: &event.MessageEventContent{
-			MsgType: event.MsgText,
-			Body:    body,
-			BeeperActionMessage: &event.BeeperActionMessage{
-				Type:     event.BeeperActionMessageCall,
-				CallType: callType,
-			},
-		},
+	status := "unknown"
+	if strings.Contains(att.CTA.Type_, "_missed_") {
+		status = "missed"
 	}
+	return CallLogToMatrix(body, callType, status, 0)
 }
 
 func isXMACallLog(att *table.WrappedXMA) bool {
